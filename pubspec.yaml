@@ -12,7 +12,7 @@ dependencies:
   camera: ^0.11.0+2
   google_mlkit_commons: any
   google_mlkit_object_detection: any
-  google_mlkit_selfie_segmentation: any
+  # google_mlkit_selfie_segmentation 제거 → MobileSAM ONNX로 대체
   image: ^4.3.0
   path_provider: ^2.1.4
   permission_handler: ^11.3.1
