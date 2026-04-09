@@ -1,61 +1,41 @@
 import 'package:flutter/material.dart';
+import '../services/yolo_service.dart';
 
 class GuidePainter extends CustomPainter {
-  final List<List<Offset>> currentContours;
-  final List<Path> expertGuides;
-  final double matchScore;
+  final List<Detection> detections;
 
-  GuidePainter({
-    required this.currentContours,
-    required this.expertGuides,
-    this.matchScore = 0.0,
-  });
+  GuidePainter({required this.detections});
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 1. 현재 사물 외곽선 스타일 (흰색 실선)
-    final whitePaint = Paint()
-      ..color = Colors.white.withOpacity(0.8)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
+    for (int i = 0; i < detections.length; i++) {
+      var det = detections[i];
 
-    // 2. 전문가 추천 가이드 스타일 (초록색 실선)
-    final greenPaint = Paint()
-      ..color = Colors.greenAccent
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.5
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
+      Color boxColor = _getColorForIndex(i);
+      final boxPaint = Paint()
+        ..color = boxColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.0;
 
-    // 사물 외곽선 그리기
-    for (var points in currentContours) {
-      if (points.isNotEmpty) {
-        final path = Path()..addPolygon(points, true);
-        canvas.drawPath(path, whitePaint);
-      }
-    }
+      canvas.drawRect(det.rect, boxPaint);
 
-    // 전문가 가이드 그리기
-    for (var path in expertGuides) {
-      canvas.drawPath(path, greenPaint);
-    }
+      String labelText = "${det.label} ${(det.confidence * 100).toStringAsFixed(1)}%";
+      final textPainter = TextPainter(
+        text: TextSpan(text: labelText, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        textDirection: TextDirection.ltr,
+      )..layout();
 
-    // 점수가 높을 때 텍스트 표시
-    if (matchScore > 85) {
-      _drawBestShotUI(canvas, size);
+      final textBgRect = Rect.fromLTWH(det.rect.left, det.rect.top - 25, textPainter.width + 10, 25);
+      canvas.drawRect(textBgRect, Paint()..color = boxColor.withOpacity(0.8));
+      textPainter.paint(canvas, Offset(det.rect.left + 5, det.rect.top - 22));
     }
   }
 
-  void _drawBestShotUI(Canvas canvas, Size size) {
-    final textPainter = TextPainter(
-      text: const TextSpan(
-        text: "BEST SHOT",
-        style: TextStyle(color: Colors.greenAccent, fontSize: 40, fontWeight: FontWeight.bold),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    textPainter.paint(canvas, Offset(size.width / 2 - textPainter.width / 2, size.height * 0.7));
+  Color _getColorForIndex(int index) {
+    List<Color> colors = [Colors.greenAccent, Colors.redAccent, Colors.cyanAccent, Colors.orangeAccent, Colors.amberAccent];
+    return colors[index % colors.length];
   }
 
   @override
-  bool shouldRepaint(CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
