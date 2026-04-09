@@ -1,32 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'screens/camera_screen.dart';
 
-Future<void> main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 세로 모드 고정
-  await SystemChrome.setPreferredOrientations([
+  // 세로 고정
+  SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
 
-  // 상태바 투명
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-    ),
-  );
+  // 상태바 투명 + 아이콘 밝게
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+  ));
 
-  // 카메라 권한 요청
-  await Permission.camera.request();
-
-  runApp(const AIPhotoCoachApp());
+  runApp(const AiPhotoCoachApp());
 }
 
-class AIPhotoCoachApp extends StatelessWidget {
-  const AIPhotoCoachApp({super.key});
+class AiPhotoCoachApp extends StatelessWidget {
+  const AiPhotoCoachApp({super.key});
 
   @override
   Widget build(BuildContext context) {

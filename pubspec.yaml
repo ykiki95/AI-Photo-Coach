@@ -1,6 +1,7 @@
 name: ai_photo_coach
-description: AI Photo Coach - Smart Camera Composition Guide
-version: 1.0.0
+description: AI Photo Coach - 실시간 사진 구도 가이드 앱
+publish_to: 'none'
+version: 1.0.0+1
 
 environment:
   sdk: ^3.5.0
@@ -8,19 +9,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
-  camera: ^0.11.0+2
-  google_mlkit_commons: any
-  google_mlkit_object_detection: any
-  # google_mlkit_selfie_segmentation 제거 → MobileSAM ONNX로 대체
-  image: ^4.3.0
-  path_provider: ^2.1.4
-  permission_handler: ^11.3.1
+  ultralytics_yolo: ^0.1.46
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^4.0.0
+  flutter_lints: ^5.0.0
 
 flutter:
   uses-material-design: true

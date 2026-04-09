@@ -1,307 +1,308 @@
-import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:camera/camera.dart';
-import '../models/detected_object.dart';
-import '../services/native_sam_service.dart';
-import '../services/object_detector_service.dart';
-import '../services/scene_classifier.dart';
-import '../services/contour_extractor.dart';
-import '../utils/composition_rules.dart';
+import 'package:ultralytics_yolo/ultralytics_yolo.dart';
+import 'package:ultralytics_yolo/widgets/yolo_controller.dart';
 import '../painters/contour_painter.dart';
-import '../painters/guide_painter.dart';
-import 'result_screen.dart';
-import 'package:google_mlkit_commons/google_mlkit_commons.dart';
+import '../painters/hud_painter.dart';
+import '../utils/marching_squares.dart';
+import '../utils/composition_scorer.dart';
+import '../utils/scene_classifier.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
+
   @override
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver {
-  CameraController? _cam;
-  late List<CameraDescription> _cameras;
+class _CameraScreenState extends State<CameraScreen> {
+  // YOLO 컨트롤러
+  final _controller = YOLOViewController();
 
-  // 서비스
-  final _detector = ObjectDetectorService();
-  final _samService = NativeSamService();  // ★ 네이티브 세그멘테이션
-  final _sceneClassifier = SceneClassifier();
-  final _compositionEngine = CompositionEngine();
+  // 분석 상태
+  List<DetectedObject> _detectedObjects = [];
+  CompositionResult? _composition;
+  SceneType _sceneType = SceneType.object;
+  String _sceneLabel = '사물';
+  double _score = 0;
+  String _message = '사물을 비춰보세요';
+  bool _shouldCapture = false;
+  double? _horizonY;
 
-  // 상태
-  bool _ready = false;
-  bool _busy = false;
-  int _frame = 0;
+  // 카메라 상태
+  bool _isFrontCamera = false;
 
-  List<DetectedObjectInfo> _objects = [];
-  List<List<Offset>> _contours = [];      // ★ 네이티브에서 추출된 외곽선
-  List<List<Offset>> _smoothContours = []; // ★ 스무딩된 외곽선
-  List<CompositionGuide> _guides = [];
-  SceneInfo _scene = SceneInfo.general;
-  int _score = 50;
-  String _msg = '피사체를 비춰주세요';
+  // 진동 쿨다운
+  DateTime _lastVibration = DateTime.now();
+
+  // 외곽선 추출 프레임 스킵 (매 3프레임마다 한번)
+  int _frameCount = 0;
+  static const _contourEveryN = 3;
+  // 이전 외곽선 캐시 (className → contour)
+  final Map<String, List<Offset>> _contourCache = {};
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _initCamera();
-  }
-
-  Future<void> _initCamera() async {
-    _cameras = await availableCameras();
-    if (_cameras.isEmpty) return;
-
-    _cam = CameraController(
-      _cameras[0],
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.nv21,
-    );
-
-    await _cam!.initialize();
-    await _cam!.startImageStream(_onFrame);
-    if (mounted) setState(() => _ready = true);
-  }
-
-  void _onFrame(CameraImage image) async {
-    _frame++;
-    if (_frame % 8 != 0 || _busy) return;  // 8프레임마다 처리
-    _busy = true;
-
-    try {
-      final rotation = _cameras[0].sensorOrientation;
-      final imgSize = Size(image.width.toDouble(), image.height.toDouble());
-
-      // ① Detector: 상위 2개 객체
-      final allObjects = await _detector.detectObjects(
-        image,
-        _rotationFromDegrees(rotation),
-        imgSize,
-      );
-      final objects = allObjects.take(2).toList();
-
-      if (objects.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _objects = []; _contours = []; _smoothContours = [];
-            _guides = []; _score = 50; _msg = '피사체를 비춰주세요';
-          });
-        }
-        return;
-      }
-
-      // ② 각 객체의 bbox → 네이티브 세그멘테이션 → 외곽선
-      final bboxes = objects.map((o) => o.boundingBox).toList();
-      final rawContours = await _samService.segmentObjects(
-        image: image,
-        rotation: rotation,
-        bboxes: bboxes,
-      );
-
-      // ③ Chaikin 스무딩
-      final smoothed = rawContours.map((pts) {
-        if (pts.length < 8) return pts;
-        return ContourSmoother.chaikinSmooth(pts, 3);
-      }).toList();
-
-      // ④ 씬 분류 + 구도 가이드
-      final scene = _sceneClassifier.classify(objects);
-
-      // 회전 적용된 이미지 크기 (세로 모드에서 카메라는 가로)
-      final rotatedSize = (rotation == 90 || rotation == 270)
-          ? Size(imgSize.height, imgSize.width)
-          : imgSize;
-
-      final guides = _compositionEngine.computeGuides(objects, scene.type, rotatedSize);
-      final score = _compositionEngine.computeOverallScore(guides);
-
-      String msg;
-      if (score >= 90) {
-        msg = '지금 촬영하세요! 📸';
-        HapticFeedback.mediumImpact();
-      } else if (score >= 70) {
-        msg = '거의 다 됐어요!';
-      } else {
-        msg = '구도를 맞춰주세요';
-      }
-
-      if (mounted) {
-        setState(() {
-          _objects = objects;
-          _contours = rawContours;
-          _smoothContours = smoothed;
-          _scene = scene;
-          _guides = guides;
-          _score = score;
-          _msg = msg;
-        });
-      }
-    } catch (e) {
-      // skip frame
-    } finally {
-      _busy = false;
-    }
-  }
-
-  InputImageRotation _rotationFromDegrees(int deg) {
-    switch (deg) {
-      case 90: return InputImageRotation.rotation90deg;
-      case 180: return InputImageRotation.rotation180deg;
-      case 270: return InputImageRotation.rotation270deg;
-      default: return InputImageRotation.rotation0deg;
-    }
-  }
-
-  Future<void> _takePicture() async {
-    if (_cam == null) return;
-    try {
-      await _cam!.stopImageStream();
-      final file = await _cam!.takePicture();
-      if (mounted) {
-        Navigator.push(context, MaterialPageRoute(
-          builder: (_) => ResultScreen(imagePath: file.path, score: _score, scene: _scene),
-        )).then((_) => _cam?.startImageStream(_onFrame));
-      }
-    } catch (e) {
-      _cam?.startImageStream(_onFrame);
-    }
+    // 세로 고정
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+    ]);
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _cam?.dispose();
-    _detector.dispose();
+    _controller.stop();
     super.dispose();
+  }
+
+  /// YOLO 인식 결과 처리 콜백
+  void _onResult(List<YOLOResult> results) {
+    if (!mounted) return;
+
+    _frameCount++;
+    final shouldExtractContour = (_frameCount % _contourEveryN == 0);
+
+    // 1) YOLOResult → DetectedObject 변환 + 외곽선 추출
+    final objects = <DetectedObject>[];
+    for (final r in results) {
+      List<Offset>? contour;
+
+      if (shouldExtractContour && r.mask != null && r.mask!.isNotEmpty) {
+        // 외곽선 새로 추출
+        contour = MarchingSquares.extractContour(r.mask!, threshold: 0.5);
+        if (contour.isNotEmpty) {
+          contour = _mapContourToNormBox(contour, r.normalizedBox);
+          // 캐시 업데이트
+          _contourCache[r.className] = contour;
+        }
+      } else {
+        // 캐시에서 이전 외곽선 사용
+        contour = _contourCache[r.className];
+      }
+
+      objects.add(DetectedObject(
+        className: r.className,
+        classIndex: r.classIndex,
+        confidence: r.confidence,
+        normalizedBox: r.normalizedBox,
+        mask: r.mask,
+        contour: (contour != null && contour.length >= 3) ? contour : null,
+      ));
+    }
+
+    // 2) 씬 분류 + 메인 피사체 선택
+    final analysis = SceneClassifier.analyze(objects);
+
+    // 3) 구도 점수 계산
+    CompositionResult? comp;
+    double? horizonY;
+
+    if (analysis.mainObject != null) {
+      if (analysis.sceneType == SceneType.landscape) {
+        // 풍경 모드: 가장 큰 객체의 상단을 수평선으로 간주
+        horizonY = analysis.mainObject!.normalizedBox.top;
+        comp = CompositionScorer.evaluateLandscape(horizonY: horizonY);
+      } else {
+        comp = CompositionScorer.evaluate(
+          objectCenter: analysis.mainObject!.center,
+          objectSize: analysis.mainObject!.areaRatio,
+          sceneType: analysis.sceneType,
+        );
+      }
+    }
+
+    // 4) 90점 이상 진동
+    if (comp != null && comp.shouldCapture) {
+      final now = DateTime.now();
+      if (now.difference(_lastVibration).inMilliseconds > 2000) {
+        HapticFeedback.mediumImpact();
+        _lastVibration = now;
+      }
+    }
+
+    // 5) 상태 업데이트
+    setState(() {
+      _detectedObjects = analysis.filteredObjects;
+      _composition = comp;
+      _sceneType = analysis.sceneType;
+      _sceneLabel = analysis.sceneLabel;
+      _score = comp?.score ?? 0;
+      _message = comp?.message ?? '사물을 비춰보세요';
+      _shouldCapture = comp?.shouldCapture ?? false;
+      _horizonY = horizonY;
+    });
+  }
+
+  /// mask 외곽선 좌표(0~1 내부)를 화면 normalizedBox 영역으로 매핑
+  List<Offset> _mapContourToNormBox(List<Offset> contour, Rect normBox) {
+    return contour.map((p) {
+      return Offset(
+        normBox.left + p.dx * normBox.width,
+        normBox.top + p.dy * normBox.height,
+      );
+    }).toList();
+  }
+
+  /// 카메라 전환
+  void _toggleCamera() {
+    _controller.switchCamera();
+    setState(() {
+      _isFrontCamera = !_isFrontCamera;
+    });
+  }
+
+  /// 셔터 버튼 (현재는 진동 피드백만)
+  void _onShutter() {
+    HapticFeedback.heavyImpact();
+    // TODO: 실제 캡처 구현
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('📸 촬영! (구도 점수: ${_score.toInt()}점)'),
+        duration: const Duration(seconds: 1),
+        backgroundColor: _shouldCapture ? const Color(0xFF00C853) : Colors.grey[800],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final screen = MediaQuery.of(context).size;
-    final preview = _cam?.value.previewSize;
-    // 카메라 프리뷰는 가로인데 화면은 세로 → 뒤집기
-    final imgSize = preview != null
-        ? Size(preview.height, preview.width)
-        : screen;
-
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // 카메라
-          if (_ready && _cam != null)
-            SizedBox.expand(
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: preview!.height,
-                  height: preview.width,
-                  child: CameraPreview(_cam!),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // === 카메라 프리뷰 + YOLO (네이티브 오버레이 OFF) ===
+            Positioned.fill(
+              child: YOLOView(
+                modelPath: 'yolo11n-seg_float32.tflite',
+                task: YOLOTask.segment,
+                controller: _controller,
+                // ★ 핵심: 네이티브 오버레이 비활성화
+                showOverlays: false,
+                showNativeUI: false,
+                // ★ 핵심: mask 데이터 수신 활성화
+                streamingConfig: YOLOStreamingConfig.custom(
+                  includeMasks: true,
+                  includeProcessingTimeMs: true,
+                  includeFps: true,
+                  maxFPS: 15,
+                ),
+                confidenceThreshold: 0.4,
+                iouThreshold: 0.45,
+                useGpu: true,
+                lensFacing: _isFrontCamera ? LensFacing.front : LensFacing.back,
+                // ★ 결과 콜백
+                onResult: _onResult,
+              ),
+            ),
+
+            // === 커스텀 외곽선 + 가이드 오버레이 ===
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: ContourGuidePainter(
+                    objects: _detectedObjects,
+                    composition: _composition,
+                    sceneType: _sceneType,
+                    horizonY: _horizonY,
+                  ),
                 ),
               ),
-            )
-          else
-            const Center(child: CircularProgressIndicator(color: Colors.white)),
-
-          // ★ 흰색 외곽선 (사물 형태)
-          if (_smoothContours.isNotEmpty)
-            CustomPaint(
-              size: screen,
-              painter: ContourPainter(
-                objects: _objects,
-                contours: _smoothContours,
-                imageSize: imgSize,
-                widgetSize: screen,
-              ),
             ),
 
-          // ★ 초록색 구도 가이드 (사물 형태)
-          if (_guides.isNotEmpty)
-            CustomPaint(
-              size: screen,
-              painter: GuidePainter(
-                guides: _guides,
-                contours: _smoothContours,
-                imageSize: imgSize,
-                widgetSize: screen,
-              ),
-            ),
-
-          // 상단 UI
-          _buildTopBar(screen),
-
-          // 셔터 버튼
-          _buildShutter(screen),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTopBar(Size screen) {
-    return Positioned(
-      top: MediaQuery.of(context).padding.top + 8,
-      left: 14, right: 14,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(16)),
-            child: Text('${_scene.icon} ${_scene.label}',
-                style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-          ),
-          Row(children: [
-            SizedBox(
-              width: 42, height: 42,
-              child: Stack(alignment: Alignment.center, children: [
-                CircularProgressIndicator(
-                  value: _score / 100, strokeWidth: 3,
-                  backgroundColor: Colors.white24,
-                  valueColor: AlwaysStoppedAnimation(
-                      _score >= 90 ? const Color(0xFF22C55E) :
-                      _score >= 70 ? const Color(0xFFEAB308) : const Color(0xFFEF4444)),
+            // === 상단 HUD (씬 라벨 + 점수 + 메시지) ===
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 80,
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: ScoreHudPainter(
+                    score: _score,
+                    sceneLabel: _sceneLabel,
+                    message: _message,
+                    shouldCapture: _shouldCapture,
+                  ),
                 ),
-                Text('$_score', style: TextStyle(
-                    color: _score >= 90 ? const Color(0xFF22C55E) : Colors.white,
-                    fontSize: 14, fontWeight: FontWeight.bold)),
-              ]),
+              ),
             ),
-            const SizedBox(width: 8),
-            Text(_msg, style: TextStyle(
-                color: _score >= 90 ? const Color(0xFF22C55E) : Colors.white70,
-                fontSize: 13, fontWeight: FontWeight.w600)),
-          ]),
-        ],
-      ),
-    );
-  }
 
-  Widget _buildShutter(Size screen) {
-    final good = _score >= 90;
-    return Positioned(
-      bottom: MediaQuery.of(context).padding.bottom + 24,
-      left: 0, right: 0,
-      child: Center(
-        child: GestureDetector(
-          onTap: _takePicture,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
-            width: 72, height: 72,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: good ? const Color(0xFF22C55E) : Colors.white, width: 4),
-              boxShadow: good ? [BoxShadow(color: const Color(0xFF22C55E).withOpacity(0.4), blurRadius: 16)] : null,
+            // === 하단 컨트롤 (셔터 + 카메라 토글) ===
+            Positioned(
+              bottom: 20,
+              left: 0,
+              right: 0,
+              height: 100,
+              child: _buildBottomControls(),
             ),
-            child: Container(
-              margin: const EdgeInsets.all(4),
-              decoration: BoxDecoration(shape: BoxShape.circle, color: good ? const Color(0xFF22C55E) : Colors.white),
-            ),
-          ),
+          ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildBottomControls() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 40),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          // 빈 공간 (좌측 대칭)
+          const SizedBox(width: 50),
+
+          // === 셔터 버튼 ===
+          GestureDetector(
+            onTap: _onShutter,
+            child: Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: _shouldCapture
+                      ? const Color(0xFF00E676)
+                      : Colors.white,
+                  width: 4,
+                ),
+                color: _shouldCapture
+                    ? const Color(0xFF00E676).withOpacity(0.3)
+                    : Colors.transparent,
+              ),
+              child: Center(
+                child: Container(
+                  width: 58,
+                  height: 58,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _shouldCapture
+                        ? const Color(0xFF00E676)
+                        : Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // === 카메라 전환 버튼 ===
+          GestureDetector(
+            onTap: _toggleCamera,
+            child: Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.2),
+              ),
+              child: Icon(
+                _isFrontCamera ? Icons.camera_rear : Icons.camera_front,
+                color: Colors.white,
+                size: 26,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
