@@ -1,7 +1,6 @@
 name: ai_photo_coach
-description: AI Photo Coach - 실시간 사진 구도 가이드 앱
-publish_to: 'none'
-version: 1.0.0+1
+description: AI Photo Coach - Smart Camera Composition Guide
+version: 1.0.0
 
 environment:
   sdk: ^3.5.0

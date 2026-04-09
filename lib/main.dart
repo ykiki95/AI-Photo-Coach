@@ -5,12 +5,10 @@ import 'screens/camera_screen.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 세로 고정
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
 
-  // 상태바 투명 + 아이콘 밝게
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
