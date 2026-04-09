@@ -18,6 +18,7 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   final _controller = YOLOViewController();
 
+  // 현재 표시 중인 상태
   List<DetectedObject> _detectedObjects = [];
   CompositionResult? _composition;
   SceneType _sceneType = SceneType.object;
@@ -29,10 +30,19 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isFrontCamera = false;
   DateTime _lastVibration = DateTime.now();
 
+  // 깜박임 방지: 이전 프레임 결과 보관 + 변경 감지
+  List<DetectedObject> _prevObjects = [];
+  double _prevScore = 0;
+  String _prevSceneLabel = '';
+
   // 외곽선 추출 프레임 스킵 (매 3프레임마다)
   int _frameCount = 0;
   static const _contourEveryN = 3;
   final Map<String, List<Offset>> _contourCache = {};
+
+  // mask 디버그 카운터
+  int _maskReceivedCount = 0;
+  int _maskNullCount = 0;
 
   @override
   void initState() {
@@ -54,16 +64,29 @@ class _CameraScreenState extends State<CameraScreen> {
 
     final objects = <DetectedObject>[];
     for (final r in results) {
+      // mask 디버그 (처음 30프레임만)
+      if (_frameCount <= 30) {
+        if (r.mask != null && r.mask!.isNotEmpty) {
+          _maskReceivedCount++;
+          if (_frameCount == 30) {
+            debugPrint('📊 mask 수신 통계: received=$_maskReceivedCount, null=$_maskNullCount (30프레임)');
+            debugPrint('📊 mask 크기: ${r.mask!.length}x${r.mask!.first.length}');
+          }
+        } else {
+          _maskNullCount++;
+        }
+      }
+
       List<Offset>? contour;
 
       if (shouldExtractContour && r.mask != null && r.mask!.isNotEmpty) {
         contour = MarchingSquares.extractContour(r.mask!, threshold: 0.5);
         if (contour.isNotEmpty) {
           contour = _mapContourToNormBox(contour, r.normalizedBox);
-          _contourCache[r.className] = contour;
+          _contourCache['${r.classIndex}_${r.className}'] = contour;
         }
       } else {
-        contour = _contourCache[r.className];
+        contour = _contourCache['${r.classIndex}_${r.className}'];
       }
 
       objects.add(DetectedObject(
@@ -102,16 +125,40 @@ class _CameraScreenState extends State<CameraScreen> {
       }
     }
 
-    setState(() {
-      _detectedObjects = analysis.filteredObjects;
-      _composition = comp;
-      _sceneType = analysis.sceneType;
-      _sceneLabel = analysis.sceneLabel;
-      _score = comp?.score ?? 0;
-      _message = comp?.message ?? '사물을 비춰보세요';
-      _shouldCapture = comp?.shouldCapture ?? false;
-      _horizonY = horizonY;
-    });
+    // 깜박임 방지: 의미 있는 변화가 있을 때만 setState
+    final newScore = comp?.score ?? 0;
+    final newLabel = analysis.sceneLabel;
+    final objectsChanged = _didObjectsChange(analysis.filteredObjects, _prevObjects);
+    final scoreChanged = (newScore - _prevScore).abs() > 2.0;
+    final labelChanged = newLabel != _prevSceneLabel;
+
+    if (objectsChanged || scoreChanged || labelChanged) {
+      _prevObjects = analysis.filteredObjects;
+      _prevScore = newScore;
+      _prevSceneLabel = newLabel;
+
+      setState(() {
+        _detectedObjects = analysis.filteredObjects;
+        _composition = comp;
+        _sceneType = analysis.sceneType;
+        _sceneLabel = newLabel;
+        _score = newScore;
+        _message = comp?.message ?? '사물을 비춰보세요';
+        _shouldCapture = comp?.shouldCapture ?? false;
+        _horizonY = horizonY;
+      });
+    }
+  }
+
+  /// 객체 목록이 의미 있게 변경되었는지 확인
+  bool _didObjectsChange(List<DetectedObject> a, List<DetectedObject> b) {
+    if (a.length != b.length) return true;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i].className != b[i].className) return true;
+      // 중심점이 3% 이상 이동했으면 변경
+      if ((a[i].center - b[i].center).distance > 0.03) return true;
+    }
+    return false;
   }
 
   List<Offset> _mapContourToNormBox(List<Offset> contour, Rect normBox) {
@@ -142,7 +189,6 @@ class _CameraScreenState extends State<CameraScreen> {
       body: SafeArea(
         child: Stack(
           children: [
-            // 카메라 + YOLO (네이티브 오버레이 OFF)
             Positioned.fill(
               child: YOLOView(
                 modelPath: 'yolo11n-seg_float32.tflite',
@@ -164,7 +210,6 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
 
-            // 커스텀 외곽선 + 가이드 오버레이
             Positioned.fill(
               child: IgnorePointer(
                 child: CustomPaint(
@@ -178,7 +223,6 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
 
-            // 상단 HUD
             Positioned(
               top: 0, left: 0, right: 0, height: 80,
               child: IgnorePointer(
@@ -193,7 +237,6 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
 
-            // 하단 컨트롤
             Positioned(
               bottom: 20, left: 0, right: 0, height: 100,
               child: _buildBottomControls(),
