@@ -3,13 +3,13 @@ description: AI Photo Coach - Smart Camera Composition Guide
 version: 1.0.0
 
 environment:
-  sdk: ^3.5.0
+  sdk: ^3.8.0
 
 dependencies:
   flutter:
     sdk: flutter
 
-  ultralytics_yolo: ^0.1.26
+  ultralytics_yolo: 0.1.46
   image: ^4.3.0
   path_provider: ^2.1.4
   permission_handler: ^11.3.1
